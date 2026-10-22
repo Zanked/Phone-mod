@@ -1,0 +1,106 @@
+name: Build Pink Phone
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Locate and prepare project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository files:"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | head -200
+
+          SOURCE_BUILD_FILE=""
+
+          # First look for a Gradle project already checked into the repository.
+          while IFS= read -r -d '' file; do
+            SOURCE_BUILD_FILE="$file"
+            break
+          done < <(find "$GITHUB_WORKSPACE" \
+            -type f \( -name build.gradle -o -name build.gradle.kts \) \
+            -not -path '*/.gradle/*' -print0)
+
+          # If the repository contains only a ZIP, unpack it into a fixed path.
+          if [ -z "$SOURCE_BUILD_FILE" ]; then
+            ARCHIVE=""
+            while IFS= read -r -d '' file; do
+              ARCHIVE="$file"
+              break
+            done < <(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name '*.zip' -print0)
+
+            if [ -z "$ARCHIVE" ]; then
+              echo "ERROR: No build.gradle, build.gradle.kts, or project ZIP found."
+              exit 1
+            fi
+
+            rm -rf /tmp/pinkphone-unpacked
+            mkdir -p /tmp/pinkphone-unpacked
+            unzip -oq "$ARCHIVE" -d /tmp/pinkphone-unpacked
+
+            while IFS= read -r -d '' file; do
+              SOURCE_BUILD_FILE="$file"
+              break
+            done < <(find /tmp/pinkphone-unpacked \
+              -type f \( -name build.gradle -o -name build.gradle.kts \) \
+              -not -path '*/.gradle/*' -print0)
+          fi
+
+          if [ -z "$SOURCE_BUILD_FILE" ]; then
+            echo "ERROR: Could not find a Gradle build file."
+            find "$GITHUB_WORKSPACE" /tmp/pinkphone-unpacked \
+              -maxdepth 5 -type f 2>/dev/null | head -250
+            exit 1
+          fi
+
+          SOURCE_DIR="$(dirname "$SOURCE_BUILD_FILE")"
+          rm -rf /tmp/pinkphone-build
+          mkdir -p /tmp/pinkphone-build
+          cp -a "$SOURCE_DIR"/. /tmp/pinkphone-build/
+
+          echo "Prepared project files:"
+          ls -la /tmp/pinkphone-build
+          test -f /tmp/pinkphone-build/build.gradle -o \
+               -f /tmp/pinkphone-build/build.gradle.kts
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build mod
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/pinkphone-build
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon build
+          else
+            gradle --no-daemon build
+          fi
+
+      - name: Upload mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: PinkPhone-NeoForge-1.21.1
+          path: /tmp/pinkphone-build/build/libs/*.jar
+          if-no-files-found: error
